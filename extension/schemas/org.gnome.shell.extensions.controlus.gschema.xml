@@ -1,0 +1,83 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<schemalist gettext-domain="controlus">
+  <schema id="org.gnome.shell.extensions.controlus" path="/org/gnome/shell/extensions/controlus/">
+    
+    <!-- General settings -->
+    <key name="enabled" type="b">
+      <default>false</default>
+      <summary>RGB Enabled</summary>
+      <description>Whether the keyboard RGB is currently enabled</description>
+    </key>
+    
+    <key name="show-indicator" type="b">
+      <default>true</default>
+      <summary>Show Panel Indicator</summary>
+      <description>Show an indicator in the top panel when RGB is active</description>
+    </key>
+    
+    <key name="restore-on-login" type="b">
+      <default>true</default>
+      <summary>Restore on Login</summary>
+      <description>Restore the last color setting when logging in</description>
+    </key>
+    
+    <!-- Color settings -->
+    <key name="brightness" type="i">
+      <default>100</default>
+      <range min="0" max="100"/>
+      <summary>Brightness</summary>
+      <description>Keyboard backlight brightness (0-100)</description>
+    </key>
+    
+    <key name="last-color-r" type="i">
+      <default>0</default>
+      <range min="0" max="255"/>
+      <summary>Last Color Red</summary>
+      <description>Red component of the last used color</description>
+    </key>
+    
+    <key name="last-color-g" type="i">
+      <default>255</default>
+      <range min="0" max="255"/>
+      <summary>Last Color Green</summary>
+      <description>Green component of the last used color</description>
+    </key>
+    
+    <key name="last-color-b" type="i">
+      <default>255</default>
+      <range min="0" max="255"/>
+      <summary>Last Color Blue</summary>
+      <description>Blue component of the last used color</description>
+    </key>
+    
+    <!-- Custom color for preferences -->
+    <key name="custom-color-r" type="i">
+      <default>255</default>
+      <range min="0" max="255"/>
+      <summary>Custom Color Red</summary>
+      <description>Red component of custom color</description>
+    </key>
+    
+    <key name="custom-color-g" type="i">
+      <default>128</default>
+      <range min="0" max="255"/>
+      <summary>Custom Color Green</summary>
+      <description>Green component of custom color</description>
+    </key>
+    
+    <key name="custom-color-b" type="i">
+      <default>0</default>
+      <range min="0" max="255"/>
+      <summary>Custom Color Blue</summary>
+      <description>Blue component of custom color</description>
+    </key>
+    
+    <!-- Favorites storage -->
+    <key name="favorites" type="s">
+      <default>'[]'</default>
+      <summary>Favorite Colors</summary>
+      <description>JSON array of favorite colors</description>
+    </key>
+    
+  </schema>
+</schemalist>

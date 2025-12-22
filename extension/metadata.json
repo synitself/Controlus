@@ -1,0 +1,10 @@
+{
+    "uuid": "controlus@io.github.controlus",
+    "name": "Controlus RGB",
+    "description": "Control AORUS/Gigabyte keyboard RGB lighting from Quick Settings",
+    "version": 1,
+    "shell-version": ["49"],
+    "url": "https://github.com/controlus/gnome-extension",
+    "settings-schema": "org.gnome.shell.extensions.controlus",
+    "gettext-domain": "controlus"
+}

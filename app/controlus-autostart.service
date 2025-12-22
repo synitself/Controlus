@@ -1,0 +1,11 @@
+[Unit]
+Description=Controlus - Restore keyboard RGB color on boot
+After=multi-user.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/controlus-autostart
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,19 @@
+# Controlus udev rules
+# Unified rules for Gigabyte AORUS and Logitech G Pro
+
+# Gigabyte/AORUS Keyboard (VID: 0414, PID: 7a44)
+SUBSYSTEM=="usb", ATTR{idVendor}=="0414", ATTR{idProduct}=="7a44", MODE="0666"
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="0414", ATTRS{idProduct}=="7a44", MODE="0666"
+
+# Logitech G Pro Wireless Mouse
+# Lightspeed Receiver (VID: 046d, PID: c539)
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="046d", ATTRS{idProduct}=="c539", MODE="0666", TAG+="uaccess"
+KERNEL=="hidraw*", ATTRS{idVendor}=="046d", ATTRS{idProduct}=="c539", MODE="0666", TAG+="uaccess"
+
+# Virtual device created by kernel (VID: 046d, PID: 4079)
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="046d", ATTRS{idProduct}=="4079", MODE="0666", TAG+="uaccess"
+KERNEL=="hidraw*", ATTRS{idVendor}=="046d", ATTRS{idProduct}=="4079", MODE="0666", TAG+="uaccess"
+
+# G Pro Wired mode (VID: 046d, PID: c088)
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="046d", ATTRS{idProduct}=="c088", MODE="0666", TAG+="uaccess"
+KERNEL=="hidraw*", ATTRS{idVendor}=="046d", ATTRS{idProduct}=="c088", MODE="0666", TAG+="uaccess"

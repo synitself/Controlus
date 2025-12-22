@@ -1,0 +1,51 @@
+/* Controlus RGB - Quick Settings Styles */
+/* IMPORTANT: Use only scoped selectors to avoid affecting global GNOME Shell theme */
+/* WARNING: Do NOT modify global button, text, or active state styles */
+
+/* RGB Spectrum bar */
+.controlus-spectrum-bar {
+    border-radius: 8px;
+    min-height: 32px;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
+}
+
+/* Color button in the grid (fallback) */
+.controlus-color-btn {
+    border-radius: 50%;
+    min-width: 28px;
+    min-height: 28px;
+    padding: 2px;
+}
+
+/* Color swatch (the actual colored circle) */
+.controlus-color-swatch {
+    border-radius: 50%;
+    border: 2px solid rgba(255, 255, 255, 0.2);
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
+}
+
+/* Color grid container */
+.controlus-color-grid {
+    padding: 8px;
+}
+
+.controlus-color-row {
+    padding: 4px 0;
+}
+
+/* Brightness box */
+.controlus-brightness-box {
+    padding: 8px;
+}
+
+/* Menu styling - avoid affecting global button states */
+.controlus-menu {
+    padding: 12px;
+}
+
+/* DO NOT override these styles as they affect global GNOME Shell theme */
+/* .quick-toggle-subtitle, button:active, button:hover, button:focus, etc */
+
+/* CRITICAL: Never override text color for active menu items */
+/* The theme handles this automatically. Only specify colors for custom widgets. */
+

@@ -1,0 +1,10 @@
+[Desktop Entry]
+Name=Controlus
+Comment=Keyboard RGB Control
+Exec=controlus
+Icon=preferences-desktop-color
+Terminal=false
+Type=Application
+Categories=Utility;Settings;HardwareSettings;
+Keywords=rgb;keyboard;light;color;backlight;
+StartupNotify=true
