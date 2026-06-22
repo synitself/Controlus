@@ -1,0 +1,3 @@
+PySide6>=6.6
+hidapi>=0.14
+openrgb-python>=0.3
