@@ -126,11 +126,41 @@ def _set_color_hidraw(rgb: Tuple[int, int, int], brightness: int = 100) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# Logitech G Pro Wireless (HID++ via hidapi) - unchanged from Linux backend
+# Logitech G Pro Wireless (HID++ 2.0 via hidapi)
 # ---------------------------------------------------------------------------
+#
+# Protocol verified against OpenRGB's LogitechProtocolCommon. Feature page
+# 0x8070 (COLOR_LED_EFFECTS). Two things are required for a colour to actually
+# stick, and both were missing from the original port:
+#   1. The device must be put into software/direct control first via
+#      SET_SW_CTL (function 0x80) - otherwise it stays on its onboard profile
+#      and silently ignores colour writes (they still ACK).
+#   2. The static colour goes through SET_EFFECT (function 0x30) as
+#      [zone, mode=static, r, g, b] - a single-byte mode, not a 2-byte id.
+# 0x8070 has no brightness byte for the static effect, so brightness is applied
+# by scaling RGB.
+LOGITECH_FP8070 = 0x8070
+LOGITECH_FP8070_SET_EFFECT = 0x30
+LOGITECH_FP8070_SET_SW_CTL = 0x80
+LOGITECH_HIDPP_ROOT_GET_FEATURE = 0x00
+
+
+def _hidpp_call(device, device_index, feature_index, func, params=()):
+    """Send a 20-byte HID++ long request and return the response list (or None)."""
+    buf = bytearray(20)
+    buf[0] = HIDPP_LONG_MESSAGE
+    buf[1] = device_index
+    buf[2] = feature_index
+    buf[3] = func
+    for i, p in enumerate(params):
+        buf[4 + i] = p
+    device.write(bytes(buf))
+    resp = device.read(20, timeout_ms=500)
+    return list(resp) if resp else None
+
 
 def _set_logitech_color_hidpp(rgb: Tuple[int, int, int], brightness: int = 100) -> bool:
-    """Set Logitech G Pro color via HID++ protocol using hidapi."""
+    """Set Logitech G Pro Wireless colour via HID++ 2.0 (feature 0x8070)."""
     try:
         import hid
     except ImportError:
@@ -138,26 +168,26 @@ def _set_logitech_color_hidpp(rgb: Tuple[int, int, int], brightness: int = 100) 
 
     r, g, b = _clamp_rgb(rgb)
     brightness = max(0, min(100, int(brightness)))
+    scale = brightness / 100.0
+    r, g, b = int(r * scale), int(g * scale), int(b * scale)
 
-    # Try G Pro Wireless via Lightspeed receiver first (most reliable)
+    # G Pro Wireless is reached through the Lightspeed receiver as paired
+    # device index 1.
     pids_to_try = [
-        (LOGITECH_LIGHTSPEED_PID, DEVICE_INDEX_WIRELESS),  # 0xC539 receiver, paired device
+        (LOGITECH_LIGHTSPEED_PID, DEVICE_INDEX_WIRELESS),  # 0xC539 receiver
         (LOGITECH_G_PRO_WIRELESS_PID, 0xFF),               # 0x4079 virtual device
     ]
 
     device = None
     device_index = DEVICE_INDEX_WIRELESS
-
     for pid, dev_idx in pids_to_try:
         try:
             devices = hid.enumerate(LOGITECH_VENDOR_ID, pid)
         except Exception:
             continue
         for dev_info in devices:
-            # HID++ interface: usage_page=0xFF00, usage=2 for long messages
-            usage_page = dev_info.get("usage_page", 0)
-            usage = dev_info.get("usage", 0)
-            if usage_page == 0xFF00 and usage == 2:
+            # HID++ long-message interface: usage_page=0xFF00, usage=2.
+            if dev_info.get("usage_page", 0) == 0xFF00 and dev_info.get("usage", 0) == 2:
                 try:
                     device = hid.device()
                     device.open_path(dev_info["path"])
@@ -173,48 +203,25 @@ def _set_logitech_color_hidpp(rgb: Tuple[int, int, int], brightness: int = 100) 
         return False
 
     try:
-        # Find the RGB Effects feature index (feature pages 0x8070 / 0x8071)
-        rgb_feature_index = None
-        for feature_page in [0x8070, 0x8071]:
-            query_data = bytearray(20)
-            query_data[0] = HIDPP_LONG_MESSAGE
-            query_data[1] = device_index
-            query_data[2] = 0x00  # Root feature
-            query_data[3] = 0x00  # Function: get feature index
-            query_data[4] = (feature_page >> 8) & 0xFF
-            query_data[5] = feature_page & 0xFF
-
-            device.write(bytes(query_data))
-            response = device.read(20, timeout_ms=500)
-
-            if response and len(response) >= 5 and response[4] != 0:
-                rgb_feature_index = response[4]
-                break
-
-        if not rgb_feature_index:
+        # Resolve the 0x8070 feature index for this device.
+        resp = _hidpp_call(device, device_index, 0x00,
+                           LOGITECH_HIDPP_ROOT_GET_FEATURE,
+                           ((LOGITECH_FP8070 >> 8) & 0xFF, LOGITECH_FP8070 & 0xFF))
+        if not resp or len(resp) < 5 or resp[4] == 0:
             device.close()
             return False
+        feature_index = resp[4]
 
-        # Set color for each zone (0=battery indicator, 1=logo)
-        for zone in [0, 1]:
-            data = bytearray(20)
-            data[0] = HIDPP_LONG_MESSAGE
-            data[1] = device_index
-            data[2] = rgb_feature_index
-            data[3] = 0x30  # SET_LED_EFFECT for FP8070/8071
-            data[4] = zone
-            data[5] = MODE_STATIC
-            data[6] = r
-            data[7] = g
-            data[8] = b
-            data[9] = 0x00   # Speed high
-            data[10] = 0x00  # Speed low
-            data[11] = 0x00  # Curve type
-            data[12] = brightness
-            data[16] = 0x01  # Persistence
+        # Discover how many LED zones the device exposes (getInfo); default to 2.
+        info = _hidpp_call(device, device_index, feature_index, 0x00)
+        zone_count = info[4] if info and len(info) > 4 and 0 < info[4] <= 8 else 2
 
-            device.write(bytes(data))
-            device.read(20, timeout_ms=200)
+        # 1) Hand LED control to the host, then 2) set each zone to a static colour.
+        _hidpp_call(device, device_index, feature_index,
+                    LOGITECH_FP8070_SET_SW_CTL, (0x01, 0x01))
+        for zone in range(zone_count):
+            _hidpp_call(device, device_index, feature_index,
+                        LOGITECH_FP8070_SET_EFFECT, (zone, MODE_STATIC, r, g, b))
 
         device.close()
         return True
