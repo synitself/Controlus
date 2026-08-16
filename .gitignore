@@ -1,0 +1,4 @@
+# Reverse-engineering material for the AORUS keyboard protocol (~3 GB):
+# the Gigabyte Control Center installer and its unpacked internals.
+# Kept on disk, deliberately out of the repo. See CLAUDE.md.
+research/
