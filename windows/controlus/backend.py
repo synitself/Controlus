@@ -27,12 +27,13 @@ GIGABYTE_PRODUCT_ID = 0x7A44
 
 # Logitech constants
 LOGITECH_VENDOR_ID = 0x046D
-LOGITECH_G_PRO_WIRELESS_PID = 0x4079  # Virtual wireless device
+LOGITECH_G_PRO_WIRED_PID = 0xC088     # G Pro Wireless plugged in by cable
 LOGITECH_LIGHTSPEED_PID = 0xC539      # Lightspeed receiver
 
 # HID++ constants
 HIDPP_LONG_MESSAGE = 0x11
 DEVICE_INDEX_WIRELESS = 0x01
+DEVICE_INDEX_WIRED = 0xFF
 MODE_STATIC = 0x01
 
 
@@ -171,15 +172,15 @@ def _set_logitech_color_hidpp(rgb: Tuple[int, int, int], brightness: int = 100) 
     scale = brightness / 100.0
     r, g, b = int(r * scale), int(g * scale), int(b * scale)
 
-    # G Pro Wireless is reached through the Lightspeed receiver as paired
-    # device index 1.
+    # Wireless: reached through the Lightspeed receiver as paired device index 1.
+    # Wired (USB cable plugged in, e.g. while charging): the mouse enumerates
+    # as its own USB device and answers on index 0xFF - the receiver then
+    # stays silent, so every path has to be tried, not just the first that opens.
     pids_to_try = [
         (LOGITECH_LIGHTSPEED_PID, DEVICE_INDEX_WIRELESS),  # 0xC539 receiver
-        (LOGITECH_G_PRO_WIRELESS_PID, 0xFF),               # 0x4079 virtual device
+        (LOGITECH_G_PRO_WIRED_PID, DEVICE_INDEX_WIRED),    # 0xC088 over cable
     ]
 
-    device = None
-    device_index = DEVICE_INDEX_WIRELESS
     for pid, dev_idx in pids_to_try:
         try:
             devices = hid.enumerate(LOGITECH_VENDOR_ID, pid)
@@ -188,27 +189,24 @@ def _set_logitech_color_hidpp(rgb: Tuple[int, int, int], brightness: int = 100) 
         for dev_info in devices:
             # HID++ long-message interface: usage_page=0xFF00, usage=2.
             if dev_info.get("usage_page", 0) == 0xFF00 and dev_info.get("usage", 0) == 2:
-                try:
-                    device = hid.device()
-                    device.open_path(dev_info["path"])
-                    device.set_nonblocking(False)
-                    device_index = dev_idx
-                    break
-                except Exception:
-                    continue
-        if device:
-            break
+                if _apply_logitech_color(hid, dev_info["path"], dev_idx, r, g, b):
+                    return True
+    return False
 
-    if not device:
-        return False
 
+def _apply_logitech_color(hid, path, device_index, r, g, b) -> bool:
+    """Run the 0x8070 colour sequence on one HID++ path; False if the mouse doesn't answer."""
+    device = None
     try:
+        device = hid.device()
+        device.open_path(path)
+        device.set_nonblocking(False)
+
         # Resolve the 0x8070 feature index for this device.
         resp = _hidpp_call(device, device_index, 0x00,
                            LOGITECH_HIDPP_ROOT_GET_FEATURE,
                            ((LOGITECH_FP8070 >> 8) & 0xFF, LOGITECH_FP8070 & 0xFF))
-        if not resp or len(resp) < 5 or resp[4] == 0:
-            device.close()
+        if not resp or len(resp) < 5 or resp[2] == 0xFF or resp[4] == 0:
             return False
         feature_index = resp[4]
 
@@ -222,13 +220,15 @@ def _set_logitech_color_hidpp(rgb: Tuple[int, int, int], brightness: int = 100) 
         for zone in range(zone_count):
             _hidpp_call(device, device_index, feature_index,
                         LOGITECH_FP8070_SET_EFFECT, (zone, MODE_STATIC, r, g, b))
-
-        device.close()
         return True
     except Exception:
-        if device:
-            device.close()
         return False
+    finally:
+        if device is not None:
+            try:
+                device.close()
+            except Exception:
+                pass
 
 
 # ---------------------------------------------------------------------------
@@ -316,7 +316,7 @@ def get_available_devices() -> List[Dict[str, Any]]:
     # Logitech via hidapi
     if hid is not None:
         try:
-            for pid in [LOGITECH_LIGHTSPEED_PID, LOGITECH_G_PRO_WIRELESS_PID]:
+            for pid in [LOGITECH_LIGHTSPEED_PID, LOGITECH_G_PRO_WIRED_PID]:
                 if hid.enumerate(LOGITECH_VENDOR_ID, pid):
                     devices.append({
                         "name": "Logitech G Pro Wireless",
