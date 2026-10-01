@@ -46,11 +46,19 @@ features and install steps.
   touched 7A43.
 - Command `0x08` is overloaded by byte 2: `0` = set effect
   `[type, speed, brightness, color, dir]`, `3/4/5` = left/centre/right zone
-  colour. Zone colours only show in effect Custom (`9`). Brightness is 0..50.
-  The old loop over zones 0..9+0xFF fired garbage effect commands — that is
-  why brightness never changed and the light bar went dark (Fn+↑ revived it).
-  Fixed 2026-10-01; the light bar takes `[08, 01, 09, r, g, b]` and has no
-  brightness byte. Not yet confirmed by eye on the hardware.
+  colour. Zone colours only show in effect Custom (`9`). The old loop over
+  zones 0..9+0xFF fired garbage effect commands — that is why brightness never
+  changed and the light bar went dark (Fn+↑ revived it). Fixed 2026-10-01.
+- Checked by eye 2026-10-02 with `windows/tools/light_probe.py` and
+  `lightbar_probe.py` (answers land in `%APPDATA%\Controlus\*.json`):
+  - keyboard ignores both brightness bytes; **only scaling RGB dims it**;
+  - light bar: no arbitrary-RGB command found. `[08,01,09,r,g,b]`, the
+    picture matrix (`0x12` + 64-byte write) + Custom1/2, `0x14` custom colour
+    and zone colours all leave it red. What works is its Static effect
+    `[08,00,01,speed,bright 0..50,color,0]` with a firmware preset
+    (1 red, 2 green, 3 yellow, 4 blue, 5 orange, 6 purple, 7 white) — the
+    brightness byte works there. Controlus maps to the nearest preset.
+  - the bar's LEDs are red-heavy: even preset white looks pinkish.
 - Since 2026-07-18 Windows has `logi_lamparray_service` (Logitech's Dynamic
   Lighting driver). With Dynamic Lighting on, Windows drives the same LEDs and
   can overwrite whatever Controlus set.
