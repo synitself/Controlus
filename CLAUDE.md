@@ -44,21 +44,22 @@ features and install steps.
 - Two HID devices: `0414:7A44` is the 3-zone keyboard, `0414:7A43` is the
   **light bar** above it. GCC opens them separately; the old code never
   touched 7A43.
-- Command `0x08` is overloaded by byte 2: `0` = set effect
-  `[type, speed, brightness, color, dir]`, `3/4/5` = left/centre/right zone
-  colour. Zone colours only show in effect Custom (`9`). The old loop over
-  zones 0..9+0xFF fired garbage effect commands — that is why brightness never
-  changed and the light bar went dark (Fn+↑ revived it). Fixed 2026-10-01.
-- Checked by eye 2026-10-02 with `windows/tools/light_probe.py` and
-  `lightbar_probe.py` (answers land in `%APPDATA%\Controlus\*.json`):
-  - keyboard ignores both brightness bytes; **only scaling RGB dims it**;
-  - light bar: no arbitrary-RGB command found. `[08,01,09,r,g,b]`, the
-    picture matrix (`0x12` + 64-byte write) + Custom1/2, `0x14` custom colour
-    and zone colours all leave it red. What works is its Static effect
-    `[08,00,01,speed,bright 0..50,color,0]` with a firmware preset
-    (1 red, 2 green, 3 yellow, 4 blue, 5 orange, 6 purple, 7 white) — the
-    brightness byte works there. Controlus maps to the nearest preset.
-  - the bar's LEDs are red-heavy: even preset white looks pinkish.
+- Command `0x08` is overloaded by byte 2: `0` = SetLightEffect
+  `[type, speed, brightness, color, dir]`. The old loop over "zones"
+  0..9+0xFF fired garbage effect/sync commands — why brightness never changed
+  and the light bar went dark (Fn+↑ revived it).
+- **What GCC actually sends** (recorded 2026-10-02 by hooking GCC 26.09's HID
+  calls with Frida, `research/usb-capture/hidhook.py` / `hidspawn.py`):
+  keyboard `[08, 0A, r, g, b, 32, 00]` (zone 0x0A = whole keyboard), light bar
+  `[08, 01, 09, r, g, b, 00]`. Brightness = scaling RGB on both; the
+  brightness fields are ignored. No effect command on apply or at startup.
+  Controlus now sends exactly this.
+- **The light bar's blue LEDs are dead** on this laptop: GCC itself cannot
+  light it blue. So blue = dark bar, white has no blue in it, purple looks
+  red. Earlier probes (`windows/tools/light_probe.py`, `lightbar_probe.py`)
+  misread this as "the command does not work" — don't re-chase it.
+- USBPcap 1.5.4 does not work here: `\\.\USBPcapN` exist but opening fails
+  with error 2 (USB4 host). Hook the process instead of sniffing the bus.
 - Since 2026-07-18 Windows has `logi_lamparray_service` (Logitech's Dynamic
   Lighting driver). With Dynamic Lighting on, Windows drives the same LEDs and
   can overwrite whatever Controlus set.
