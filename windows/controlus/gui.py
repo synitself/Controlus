@@ -226,19 +226,15 @@ class DeviceProbe(QObject):
 # ---------------------------------------------------------------------------
 
 class ColorRing(QWidget):
-    """Hue/saturation ring around a glowing power button.
+    """Solid hue/saturation wheel.
 
-    Angle = hue (counter-clockwise from 3 o'clock); distance across the band =
-    saturation, white at the inner edge. The centre disc toggles the lights and
-    shows the colour the devices actually get.
+    Angle = hue (counter-clockwise from 3 o'clock), distance from the centre =
+    saturation (white in the middle). Dimmed while the lights are off.
     """
 
     color_changed = Signal(tuple)  # (r, g, b) at full value
-    power_clicked = Signal()
 
-    OUTER = 136
-    INNER = 84
-    BUTTON = 62
+    OUTER = 138
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -249,8 +245,6 @@ class ColorRing(QWidget):
         self.value = 1.0
         self.power = True
         self._drag = False
-        self._press_center = False
-        self._hover_center = False
 
     def hs_rgb(self) -> tuple[int, int, int]:
         r, g, b = colorsys.hsv_to_rgb(self.hue, self.saturation, 1.0)
@@ -282,53 +276,27 @@ class ColorRing(QWidget):
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing)
         c = self._center()
-
-        band = QPainterPath()
-        band.setFillRule(Qt.OddEvenFill)
-        band.addEllipse(c, self.OUTER, self.OUTER)
-        band.addEllipse(c, self.INNER, self.INNER)
+        disc = QPainterPath()
+        disc.addEllipse(c, self.OUTER, self.OUTER)
 
         hue = QConicalGradient(c, 0)
         for i in range(13):
             r, g, b = colorsys.hsv_to_rgb((i % 12) / 12, 1, 1)
             hue.setColorAt(i / 12, QColor.fromRgbF(r, g, b))
-        p.fillPath(band, QBrush(hue))
+        p.fillPath(disc, QBrush(hue))
         sat = QRadialGradient(c, self.OUTER)
-        sat.setColorAt(self.INNER / self.OUTER, QColor(255, 255, 255, 255))
+        sat.setColorAt(0.0, QColor(255, 255, 255, 255))
         sat.setColorAt(1.0, QColor(255, 255, 255, 0))
-        p.fillPath(band, QBrush(sat))
-        if self.value < 1.0:
-            p.fillPath(band, QColor(0, 0, 0, round(255 * (1 - self.value) * 0.8)))
+        p.fillPath(disc, QBrush(sat))
+        dim = 1 - self.value if self.power else 0.7
+        if dim > 0:
+            p.fillPath(disc, QColor(0, 0, 0, round(255 * dim * 0.8)))
         p.setPen(QPen(QColor(255, 255, 255, 22), 1))
         p.setBrush(Qt.NoBrush)
-        p.drawPath(band)
+        p.drawPath(disc)
 
-        # Centre power disc, Sota-style: glowing fill, white rim, power glyph.
-        out = self.output_color()
-        r = self.BUTTON + (2 if self._hover_center else 0)
-        if self.power:
-            light = QColor(out).lighter(125)
-            fill = QRadialGradient(QPointF(c.x(), c.y() - r * 0.35), r * 1.4)
-            fill.setColorAt(0.0, light)
-            fill.setColorAt(1.0, QColor(out).darker(165))
-            p.setPen(QPen(QColor(255, 255, 255, 235), 3))
-            p.setBrush(QBrush(fill))
-        else:
-            p.setPen(QPen(QColor(FAINT), 2))
-            p.setBrush(QColor("#1a1d25"))
-        p.drawEllipse(c, r, r)
-
-        glyph = QColor(255, 255, 255, 240) if self.power else QColor(MUTED)
-        if self.power and out.lightness() > 190:
-            glyph = QColor(14, 16, 20, 220)
-        p.setPen(QPen(glyph, 4, Qt.SolidLine, Qt.RoundCap))
-        p.setBrush(Qt.NoBrush)
-        p.drawArc(QRectF(c.x() - 17, c.y() - 15, 34, 34), 125 * 16, 290 * 16)
-        p.drawLine(QPointF(c.x(), c.y() - 21), QPointF(c.x(), c.y() - 3))
-
-        # Thumb on the band.
         angle = self.hue * 2 * math.pi
-        dist = self.INNER + self.saturation * (self.OUTER - self.INNER)
+        dist = self.saturation * self.OUTER
         t = QPointF(c.x() + dist * math.cos(angle), c.y() - dist * math.sin(angle))
         p.setPen(Qt.NoPen)
         p.setBrush(QColor(0, 0, 0, 100))
@@ -346,42 +314,23 @@ class ColorRing(QWidget):
     def _pick(self, pos):
         dist, angle = self._polar(pos)
         self.hue = (angle / (2 * math.pi)) % 1.0
-        self.saturation = max(0.0, min(1.0, (dist - self.INNER) / (self.OUTER - self.INNER)))
+        self.saturation = min(1.0, dist / self.OUTER)
         self.update()
         self.color_changed.emit(self.hs_rgb())
 
     def mousePressEvent(self, event):
-        if event.button() != Qt.LeftButton:
-            return
-        dist, _ = self._polar(event.position())
-        if dist <= self.BUTTON:
-            self._press_center = True
-        elif self.INNER - 10 <= dist <= self.OUTER + 14:
+        if event.button() == Qt.LeftButton and self._polar(event.position())[0] <= self.OUTER + 14:
             self._drag = True
             self._pick(event.position())
 
     def mouseMoveEvent(self, event):
-        dist, _ = self._polar(event.position())
-        hover = dist <= self.BUTTON
-        if hover != self._hover_center:
-            self._hover_center = hover
-            self.update()
-        in_band = self.INNER - 10 <= dist <= self.OUTER + 14
-        self.setCursor(Qt.PointingHandCursor if hover else Qt.CrossCursor if in_band or self._drag
-                       else Qt.ArrowCursor)
+        inside = self._polar(event.position())[0] <= self.OUTER + 14
+        self.setCursor(Qt.CrossCursor if inside or self._drag else Qt.ArrowCursor)
         if self._drag and event.buttons() & Qt.LeftButton:
             self._pick(event.position())
 
     def mouseReleaseEvent(self, event):
-        if self._press_center and self._polar(event.position())[0] <= self.BUTTON:
-            self.power_clicked.emit()
-        self._press_center = False
         self._drag = False
-
-    def leaveEvent(self, event):
-        if self._hover_center:
-            self._hover_center = False
-            self.update()
 
 
 # ---------------------------------------------------------------------------
@@ -389,7 +338,7 @@ class ColorRing(QWidget):
 # ---------------------------------------------------------------------------
 
 class IconButton(QAbstractButton):
-    """Flat round title-bar button that draws its own glyph ('close' / 'gear')."""
+    """Flat round title-bar button that draws its own glyph (only 'close' for now)."""
 
     def __init__(self, glyph, tooltip, parent=None):
         super().__init__(parent)
@@ -417,40 +366,23 @@ class IconButton(QAbstractButton):
             p.setPen(QPen(col, 2.2, Qt.SolidLine, Qt.RoundCap))
             p.drawLine(QPointF(c.x() - 6.5, c.y() - 6.5), QPointF(c.x() + 6.5, c.y() + 6.5))
             p.drawLine(QPointF(c.x() + 6.5, c.y() - 6.5), QPointF(c.x() - 6.5, c.y() + 6.5))
-        else:  # gear
-            p.setPen(Qt.NoPen)
-            p.setBrush(col)
-            teeth = QPainterPath()
-            pts = []
-            for i in range(16):
-                a = i * math.pi / 8 + math.pi / 16
-                rr = 9.5 if i % 2 == 0 else 7.2
-                pts.append(QPointF(c.x() + rr * math.cos(a), c.y() + rr * math.sin(a)))
-            teeth.addPolygon(QPolygonF(pts))
-            teeth.closeSubpath()
-            hole = QPainterPath()
-            hole.addEllipse(c, 3.4, 3.4)
-            p.drawPath(teeth.subtracted(hole))
 
 
 class TitleBar(QWidget):
-    """Sota-style header: close on the left, the mark in the middle, settings on the right.
+    """Sota-style header: close on the left, the mark in the middle.
 
     Dragging anywhere on it moves the frameless window.
     """
 
     close_clicked = Signal()
 
-    def __init__(self, menu: QMenu, parent=None):
+    def __init__(self, parent=None):
         super().__init__(parent)
         self.setFixedHeight(52)
         row = QHBoxLayout(self)
         row.setContentsMargins(10, 8, 10, 0)
         self.close_btn = IconButton("close", "Hide to tray")
         self.close_btn.clicked.connect(self.close_clicked)
-        self.gear = IconButton("gear", "Settings")
-        self.gear.clicked.connect(
-            lambda: menu.exec(self.gear.mapToGlobal(self.gear.rect().bottomLeft())))
         mark = QLabel()
         mark.setPixmap(_mark_pixmap(24, self.devicePixelRatioF()))
         word = QLabel("Controlus")
@@ -461,7 +393,7 @@ class TitleBar(QWidget):
         row.addSpacing(6)
         row.addWidget(word)
         row.addStretch()
-        row.addWidget(self.gear)
+        row.addSpacing(self.close_btn.width())
 
     def mousePressEvent(self, event):
         if event.button() == Qt.LeftButton and self.window().windowHandle():
@@ -603,7 +535,7 @@ class ControlusWindow(QWidget):
         self.apply_timer = QTimer(self, singleShot=True, interval=APPLY_DEBOUNCE_MS)
         self.apply_timer.timeout.connect(self.apply_now)
 
-        # Shared menu: the gear in the title bar and the tray icon.
+        # Tray menu.
         self.menu = QMenu(self)
         self.act_open = self.menu.addAction("Open Controlus", self.show_window)
         self.menu.addSeparator()
@@ -621,7 +553,7 @@ class ControlusWindow(QWidget):
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
-        self.titlebar = TitleBar(self.menu)
+        self.titlebar = TitleBar()
         self.titlebar.close_clicked.connect(self.hide_to_tray)
         root.addWidget(self.titlebar)
 
@@ -644,7 +576,6 @@ class ControlusWindow(QWidget):
 
         self.ring = ColorRing()
         self.ring.color_changed.connect(self.on_ring_changed)
-        self.ring.power_clicked.connect(lambda: self.set_power(not self.config["power"]))
         ring_row = QHBoxLayout()
         ring_row.addStretch()
         ring_row.addWidget(self.ring)
@@ -688,6 +619,7 @@ class ControlusWindow(QWidget):
         bright.addWidget(sun)
         self.brightness = QSlider(Qt.Horizontal)
         self.brightness.setRange(0, 100)
+        self.brightness.setFixedHeight(24)  # the 18 px handle got clipped at the default height
         self.brightness.setValue(int(self.config.get("brightness", 100)))
         self.brightness.valueChanged.connect(self.on_brightness_changed)
         bright.addWidget(self.brightness, 1)
