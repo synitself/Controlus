@@ -19,6 +19,26 @@ features and install steps.
 | `99-controlus.rules` | udev rules for non-root HID access |
 | `research/` | reverse-engineering input, see below |
 
+## Mouse traps (Windows)
+
+- The G Pro Wireless has two HID++ paths: via the Lightspeed receiver
+  (`046D:C539`, device index `0x01`) and, when the cable is plugged in, as its
+  own USB device (`046D:C088`, index `0xFF`). When wired, the receiver stays
+  silent — so every path has to be tried. Fixed 2026-10-01; before that a
+  plugged-in mouse was never recoloured. (`0x4079` is the mouse's ID *inside*
+  the radio link and never shows up as a USB device.)
+- The mouse drops a host-set colour on every link change (cable in/out,
+  waking from sleep). `LogitechReconnectWatcher` in `windows/controlus/backend.py`
+  listens for the receiver's HID++ `0x41` notification and for `C088`
+  appearing/disappearing, and re-applies the last colour. It runs only while
+  the window is open, and logs to `%APPDATA%\Controlus\watcher.log`. Added
+  2026-10-01; whether the `0x41` path fires on this receiver is not confirmed yet.
+- Windows GUI redesigned 2026-10-01: live apply (debounced, worker thread),
+  power toggle, device chips, presets, restores the colour on launch.
+- Since 2026-07-18 Windows has `logi_lamparray_service` (Logitech's Dynamic
+  Lighting driver). With Dynamic Lighting on, Windows drives the same LEDs and
+  can overwrite whatever Controlus set.
+
 ## research/ — where the protocol came from
 
 The AORUS keyboard protocol was recovered by tearing apart Gigabyte Control

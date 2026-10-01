@@ -17,9 +17,12 @@ Requires (optional, install what you have hardware for):
 
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
-from typing import Tuple, Optional, List, Dict, Any
+import threading
+import time
+from typing import Callable, Tuple, Optional, List, Dict, Any
 
 # Gigabyte keyboard constants
 GIGABYTE_VENDOR_ID = 0x0414
@@ -145,6 +148,10 @@ LOGITECH_FP8070_SET_EFFECT = 0x30
 LOGITECH_FP8070_SET_SW_CTL = 0x80
 LOGITECH_HIDPP_ROOT_GET_FEATURE = 0x00
 
+# The GUI's apply worker and the reconnect watcher both talk HID++; responses are
+# read back positionally, so two conversations at once would read each other's.
+_logitech_lock = threading.Lock()
+
 
 def _hidpp_call(device, device_index, feature_index, func, params=()):
     """Send a 20-byte HID++ long request and return the response list (or None)."""
@@ -181,16 +188,17 @@ def _set_logitech_color_hidpp(rgb: Tuple[int, int, int], brightness: int = 100) 
         (LOGITECH_G_PRO_WIRED_PID, DEVICE_INDEX_WIRED),    # 0xC088 over cable
     ]
 
-    for pid, dev_idx in pids_to_try:
-        try:
-            devices = hid.enumerate(LOGITECH_VENDOR_ID, pid)
-        except Exception:
-            continue
-        for dev_info in devices:
-            # HID++ long-message interface: usage_page=0xFF00, usage=2.
-            if dev_info.get("usage_page", 0) == 0xFF00 and dev_info.get("usage", 0) == 2:
-                if _apply_logitech_color(hid, dev_info["path"], dev_idx, r, g, b):
-                    return True
+    with _logitech_lock:
+        for pid, dev_idx in pids_to_try:
+            try:
+                devices = hid.enumerate(LOGITECH_VENDOR_ID, pid)
+            except Exception:
+                continue
+            for dev_info in devices:
+                # HID++ long-message interface: usage_page=0xFF00, usage=2.
+                if dev_info.get("usage_page", 0) == 0xFF00 and dev_info.get("usage", 0) == 2:
+                    if _apply_logitech_color(hid, dev_info["path"], dev_idx, r, g, b):
+                        return True
     return False
 
 
@@ -227,6 +235,129 @@ def _apply_logitech_color(hid, path, device_index, r, g, b) -> bool:
         if device is not None:
             try:
                 device.close()
+            except Exception:
+                pass
+
+
+# The mouse forgets a host-set colour whenever its link changes: plugging or
+# unplugging the cable, or waking up from sleep, drops it back to the onboard
+# profile (often dark). Nothing reports "colour lost", so the watcher listens
+# for the events that cause it and re-applies the last colour:
+#   - the receiver's HID++ 0x41 "device connection" notification (mouse came
+#     back on the radio link: woke up, or the cable was pulled);
+#   - the wired device (0xC088) appearing or disappearing.
+HIDPP_SHORT_MESSAGE = 0x10
+HIDPP_NOTIF_DEVICE_CONNECTION = 0x41
+HIDPP_LINK_NOT_ESTABLISHED = 0x40
+REAPPLY_DELAY_S = 1.0          # let the mouse settle on the new link first
+WATCH_LOG = os.path.join(os.environ.get("APPDATA", os.path.expanduser("~")),
+                         "Controlus", "watcher.log")
+
+
+def _watch_log(message: str) -> None:
+    try:
+        os.makedirs(os.path.dirname(WATCH_LOG), exist_ok=True)
+        if os.path.exists(WATCH_LOG) and os.path.getsize(WATCH_LOG) > 256 * 1024:
+            os.replace(WATCH_LOG, WATCH_LOG + ".old")
+        with open(WATCH_LOG, "a", encoding="utf-8") as f:
+            f.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} {message}\n")
+    except Exception:
+        pass
+
+
+class LogitechReconnectWatcher(threading.Thread):
+    """Background thread that re-applies the mouse colour after a link change.
+
+    `get_color` returns ((r, g, b), brightness) - the colour to restore.
+    """
+
+    def __init__(self, get_color: Callable[[], Tuple[Tuple[int, int, int], int]]):
+        super().__init__(name="logitech-watcher", daemon=True)
+        self._get_color = get_color
+        self._stop = threading.Event()
+        self._receiver = None
+        self._wired = None           # unknown until the first poll
+        self._reapply_at = None
+        self._retries = 0
+
+    def stop(self) -> None:
+        self._stop.set()
+
+    def _open_receiver(self, hid):
+        """Open the receiver's short HID++ collection, where 0x41 notifications arrive."""
+        try:
+            for info in hid.enumerate(LOGITECH_VENDOR_ID, LOGITECH_LIGHTSPEED_PID):
+                if info.get("usage_page") == 0xFF00 and info.get("usage") == 1:
+                    dev = hid.device()
+                    dev.open_path(info["path"])
+                    # Receiver register 0x00 (notification flags): wireless
+                    # (0x000100) + software present (0x000800), so connection
+                    # events are reported at all.
+                    dev.write(bytes([HIDPP_SHORT_MESSAGE, 0xFF, 0x80, 0x00, 0x00, 0x09, 0x00]))
+                    _watch_log("receiver opened")
+                    return dev
+        except Exception as e:
+            _watch_log(f"receiver open failed: {e}")
+        return None
+
+    def _schedule(self, reason: str) -> None:
+        _watch_log(reason)
+        self._reapply_at = time.monotonic() + REAPPLY_DELAY_S
+        self._retries = 3
+
+    def run(self) -> None:
+        try:
+            import hid
+        except ImportError:
+            return
+        while not self._stop.is_set():
+            if self._receiver is None:
+                self._receiver = self._open_receiver(hid)
+
+            # 1) Wired device appearing / disappearing.
+            try:
+                wired = bool(hid.enumerate(LOGITECH_VENDOR_ID, LOGITECH_G_PRO_WIRED_PID))
+            except Exception:
+                wired = self._wired
+            if self._wired is not None and wired != self._wired:
+                self._schedule("cable plugged in" if wired else "cable unplugged")
+            self._wired = wired
+
+            # 2) Receiver notifications; the read doubles as the loop's sleep.
+            if self._receiver is not None:
+                try:
+                    msg = self._receiver.read(20, timeout_ms=1000)
+                except Exception as e:
+                    _watch_log(f"receiver lost: {e}")
+                    try:
+                        self._receiver.close()
+                    except Exception:
+                        pass
+                    self._receiver = None
+                    msg = None
+                if (msg and len(msg) >= 5 and msg[0] == HIDPP_SHORT_MESSAGE
+                        and msg[1] == DEVICE_INDEX_WIRELESS
+                        and msg[2] == HIDPP_NOTIF_DEVICE_CONNECTION):
+                    if msg[4] & HIDPP_LINK_NOT_ESTABLISHED:
+                        _watch_log("radio link lost")
+                    else:
+                        self._schedule("radio link established")
+            else:
+                self._stop.wait(1.0)
+
+            if self._reapply_at is not None and time.monotonic() >= self._reapply_at:
+                self._reapply_at = None
+                rgb, brightness = self._get_color()
+                ok = _set_logitech_color_hidpp(rgb, brightness)
+                _watch_log(f"re-applied {rgb} @ {brightness}%: {'ok' if ok else 'FAILED'}")
+                if not ok and self._retries > 0:
+                    # Link may not be up yet; try again a bit later.
+                    self._retries -= 1
+                    self._reapply_at = time.monotonic() + 2 * REAPPLY_DELAY_S
+
+        if self._receiver is not None:
+            try:
+                self._receiver.close()
             except Exception:
                 pass
 
@@ -316,12 +447,14 @@ def get_available_devices() -> List[Dict[str, Any]]:
     # Logitech via hidapi
     if hid is not None:
         try:
-            for pid in [LOGITECH_LIGHTSPEED_PID, LOGITECH_G_PRO_WIRED_PID]:
+            for pid, link in [(LOGITECH_G_PRO_WIRED_PID, "cable"),
+                              (LOGITECH_LIGHTSPEED_PID, "receiver")]:
                 if hid.enumerate(LOGITECH_VENDOR_ID, pid):
                     devices.append({
                         "name": "Logitech G Pro Wireless",
                         "type": "mouse",
                         "backend": "hidpp",
+                        "link": link,
                     })
                     break
         except Exception:
