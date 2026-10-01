@@ -146,8 +146,11 @@ def round_window_corners(widget: QWidget) -> None:
 def trim_working_set() -> None:
     """Hand idle pages back to Windows once the window is hidden."""
     try:
+        from ctypes import wintypes
         k32 = ctypes.windll.kernel32
-        ctypes.windll.psapi.EmptyWorkingSet(k32.GetCurrentProcess())
+        k32.GetCurrentProcess.restype = wintypes.HANDLE  # pseudo-handle -1, must stay 64-bit
+        k32.SetProcessWorkingSetSize.argtypes = (wintypes.HANDLE, ctypes.c_size_t, ctypes.c_size_t)
+        k32.SetProcessWorkingSetSize(k32.GetCurrentProcess(), ctypes.c_size_t(-1), ctypes.c_size_t(-1))
     except Exception:
         pass
 
@@ -580,6 +583,7 @@ class ControlusWindow(QWidget):
         self.setWindowFlags(Qt.Window | Qt.FramelessWindowHint)
         self.setFixedWidth(392)
         self._quitting = False
+        self._placed = False
         self._pattern = None
 
         self.config = self.load_config()
@@ -752,6 +756,15 @@ class ControlusWindow(QWidget):
 
     # -- window / tray ------------------------------------------------------------
     def show_window(self):
+        if not self._placed:
+            # A frameless window gets no help from Windows placing it; centre it
+            # in the work area so the bottom never ends up under the taskbar.
+            self.adjustSize()
+            screen = QApplication.primaryScreen().availableGeometry()
+            x = screen.x() + (screen.width() - self.width()) // 2
+            y = screen.y() + max(0, (screen.height() - self.height()) // 2)
+            self.move(x, y)
+            self._placed = True
         self.show()
         self.setWindowState(self.windowState() & ~Qt.WindowMinimized)
         self.raise_()

@@ -30,11 +30,27 @@ features and install steps.
 - The mouse drops a host-set colour on every link change (cable in/out,
   waking from sleep). `LogitechReconnectWatcher` in `windows/controlus/backend.py`
   listens for the receiver's HID++ `0x41` notification and for `C088`
-  appearing/disappearing, and re-applies the last colour. It runs only while
-  the window is open, and logs to `%APPDATA%\Controlus\watcher.log`. Added
+  appearing/disappearing, and re-applies the last colour. It runs whenever
+  Controlus runs (tray included), and logs to `%APPDATA%\Controlus\watcher.log`. Added
   2026-10-01; whether the `0x41` path fires on this receiver is not confirmed yet.
-- Windows GUI redesigned 2026-10-01: live apply (debounced, worker thread),
-  power toggle, device chips, presets, restores the colour on launch.
+- Windows GUI redesigned 2026-10-01: frameless Sota-VPN-style window (own
+  title bar, DWM rounded corners), colour ring around a glowing power button,
+  live apply (debounced, worker thread), tray icon tinted with the current
+  colour, autostart via HKCU Run `--tray`, single instance via QLocalServer.
+  Build is one-folder (`dist/Controlus/`), not one-file — see the spec comment.
+
+## Keyboard traps (AORUS laptop, Windows)
+
+- Two HID devices: `0414:7A44` is the 3-zone keyboard, `0414:7A43` is the
+  **light bar** above it. GCC opens them separately; the old code never
+  touched 7A43.
+- Command `0x08` is overloaded by byte 2: `0` = set effect
+  `[type, speed, brightness, color, dir]`, `3/4/5` = left/centre/right zone
+  colour. Zone colours only show in effect Custom (`9`). Brightness is 0..50.
+  The old loop over zones 0..9+0xFF fired garbage effect commands — that is
+  why brightness never changed and the light bar went dark (Fn+↑ revived it).
+  Fixed 2026-10-01; the light bar takes `[08, 01, 09, r, g, b]` and has no
+  brightness byte. Not yet confirmed by eye on the hardware.
 - Since 2026-07-18 Windows has `logi_lamparray_service` (Logitech's Dynamic
   Lighting driver). With Dynamic Lighting on, Windows drives the same LEDs and
   can overwrite whatever Controlus set.

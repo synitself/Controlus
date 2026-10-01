@@ -26,7 +26,8 @@ from typing import Callable, Tuple, Optional, List, Dict, Any
 
 # Gigabyte keyboard constants
 GIGABYTE_VENDOR_ID = 0x0414
-GIGABYTE_PRODUCT_ID = 0x7A44
+GIGABYTE_PRODUCT_ID = 0x7A44          # AORUS laptop keyboard (3-zone RGB)
+GIGABYTE_LIGHTBAR_PID = 0x7A43        # the light bar above it - a separate HID device
 
 # Logitech constants
 LOGITECH_VENDOR_ID = 0x046D
@@ -45,88 +46,109 @@ def _clamp_rgb(rgb: Tuple[int, int, int]) -> Tuple[int, int, int]:
 
 
 # ---------------------------------------------------------------------------
-# Gigabyte / AORUS keyboard (HID feature reports via hidapi)
+# Gigabyte / AORUS laptop keyboard + light bar (HID feature reports via hidapi)
 # ---------------------------------------------------------------------------
+#
+# Every command is a 9-byte feature report [0, cmd, b2..b7, checksum] with
+# checksum = 255 - sum(bytes[1..7]). Verified against Gigabyte Control Center
+# (IteKeyBoard / FusionLightService / RgbPageViewModel_ZoneRgb_*):
+#
+#   cmd 0x08 is overloaded - byte 2 decides what it means:
+#     [08, 00, type, speed, bright, color, dir]  SetLightEffect: switch effect
+#     [08, z,  r, g, b, bright, 0]  z = 3/4/5    SetZoneColors: left/centre/right
+#   Zone colours only show in the Custom effect (type 9), so the effect is set
+#   first. Brightness is 0..50 (GCC halves its 0..100 slider).
+#
+#   The old code looped zones 0..9 + 0xFF: zone 0 re-set the effect with r/g/b
+#   landing in type/speed/brightness, and the other indices hit the sync byte -
+#   which is why brightness never changed and the light bar went dark.
+#
+#   Light bar (7A43): [08, 01, 09, r, g, b, 0] - SetZoneColorsLightBar, the
+#   path GCC uses to drive it with an arbitrary colour. It has no brightness
+#   byte, so brightness scales RGB.
+GIGA_CMD_EFFECT = 0x08
+GIGA_CMD_IDLE = 0x0A
+GIGA_EFFECT_CUSTOM = 9
+GIGA_ZONES = (3, 4, 5)
+GIGA_MAX_BRIGHTNESS = 50
+GIGA_DELAY_S = 0.065               # GCC sleeps this long after every report
 
-def _build_keyboard_packet(zone: int, r: int, g: int, b: int, brightness: int) -> bytes:
-    """9-byte Gigabyte SetZoneColors feature report.
 
-    Layout (verified against Gigabyte Control Center's IteKeyBoard.SetZoneColors):
-        [reportID=0, cmd=0x08, zoneIndex, r, g, b, brightness, 0, checksum]
-    checksum = 255 - sum(bytes[1..7]).
+def _giga_packet(*body: int) -> bytes:
+    payload = [b & 0xFF for b in body] + [0] * (7 - len(body))
+    return bytes([0x00] + payload + [(255 - sum(payload)) & 0xFF])
+
+
+def _open_giga_control(hid, pid: int):
+    """Open the collection of 0414:pid that accepts 9-byte feature reports.
+
+    The device exposes ~11 HID collections and only the vendor one takes the
+    report; hidapi returns -1 on the others without raising. The probe is the
+    idle-timeout-off command, which GCC sends anyway, so it is harmless.
     """
-    packet = [0x00, 0x08, zone, r, g, b, brightness, 0x00]
-    checksum = (255 - sum(packet[1:8])) & 0xFF
-    packet.append(checksum)
-    return bytes(packet)
-
-
-# Gigabyte's keyboard backlight has a firmware idle timeout ("one minute mode")
-# that dims/turns off the backlight after inactivity. GCC disables it by sending
-# command 0x0A with OnOff=1 (IteKeyBoard.SetKeyboardBackLightOneMinuteMode).
-# Without this the colour applies but the backlight pulses off/on on its own.
-def _build_keyboard_idle_packet(disable: bool = True) -> bytes:
-    """9-byte report toggling the backlight idle timeout: [0, 0x0A, OnOff, 0..., checksum]."""
-    packet = [0x00, 0x0A, 0x01 if disable else 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]
-    checksum = (255 - sum(packet[1:8])) & 0xFF
-    packet.append(checksum)
-    return bytes(packet)
+    try:
+        candidates = hid.enumerate(GIGABYTE_VENDOR_ID, pid)
+    except Exception:
+        return None
+    for info in candidates:
+        device = None
+        try:
+            device = hid.device()
+            device.open_path(info["path"])
+            written = device.send_feature_report(_giga_packet(GIGA_CMD_IDLE, 0x01))
+            if written is not None and written > 0:
+                return device
+        except Exception:
+            pass
+        if device is not None:
+            try:
+                device.close()
+            except Exception:
+                pass
+    return None
 
 
 def _set_color_hidraw(rgb: Tuple[int, int, int], brightness: int = 100) -> bool:
-    """Set Gigabyte keyboard color via HID feature reports.
-
-    Sends the same 9-byte feature report the Linux driver sent through
-    HIDIOCSFEATURE, but using hidapi so it works on Windows.
-
-    The keyboard exposes ~11 HID collections; only the vendor RGB interface
-    actually accepts the report. hidapi's send_feature_report returns the
-    number of bytes written and **-1 on failure without raising**, so we must
-    check the return value rather than just catching exceptions: most
-    collections silently return -1 and only the real control interface writes
-    the full report. We try every matching path until a write succeeds.
-    """
+    """Set the AORUS keyboard (3 zones, Custom effect) and its light bar."""
     try:
         import hid
     except ImportError:
         return False
 
     r, g, b = _clamp_rgb(rgb)
-    brightness = max(0, min(100, int(brightness)))
+    level = round(max(0, min(100, int(brightness))) * GIGA_MAX_BRIGHTNESS / 100)
+    ok = False
 
-    try:
-        candidates = hid.enumerate(GIGABYTE_VENDOR_ID, GIGABYTE_PRODUCT_ID)
-    except Exception:
-        return False
-    if not candidates:
-        return False
-
-    for info in candidates:
-        device = None
+    kbd = _open_giga_control(hid, GIGABYTE_PRODUCT_ID)
+    if kbd is not None:
         try:
-            device = hid.device()
-            device.open_path(info["path"])
-            # Probe zone 0xFF (all zones) first; if the write doesn't take on
-            # this collection, skip it without spamming the others.
-            probe = device.send_feature_report(_build_keyboard_packet(0xFF, r, g, b, brightness))
-            if probe is None or probe <= 0:
-                continue
-            for zone in list(range(10)) + [0xFF]:
-                device.send_feature_report(_build_keyboard_packet(zone, r, g, b, brightness))
-            # Disable the firmware idle timeout so the backlight stays lit.
-            device.send_feature_report(_build_keyboard_idle_packet(disable=True))
-            return True
+            # Keyboard-only effect change (sync byte 0), so the bar keeps its own state.
+            kbd.send_feature_report(_giga_packet(GIGA_CMD_EFFECT, 0x00, GIGA_EFFECT_CUSTOM,
+                                                 1, level, 0, 0))
+            time.sleep(GIGA_DELAY_S)
+            for zone in GIGA_ZONES:
+                kbd.send_feature_report(_giga_packet(GIGA_CMD_EFFECT, zone, r, g, b, level, 0))
+                time.sleep(GIGA_DELAY_S)
+            ok = True
         except Exception:
-            # Wrong interface for this report; try the next one.
             pass
         finally:
-            if device is not None:
-                try:
-                    device.close()
-                except Exception:
-                    pass
+            kbd.close()
 
-    return False
+    bar = _open_giga_control(hid, GIGABYTE_LIGHTBAR_PID)
+    if bar is not None:
+        try:
+            scale = level / GIGA_MAX_BRIGHTNESS
+            bar.send_feature_report(_giga_packet(GIGA_CMD_EFFECT, 0x01, 0x09,
+                                                 round(r * scale), round(g * scale), round(b * scale)))
+            time.sleep(GIGA_DELAY_S)
+            ok = True
+        except Exception:
+            pass
+        finally:
+            bar.close()
+
+    return ok
 
 
 # ---------------------------------------------------------------------------
