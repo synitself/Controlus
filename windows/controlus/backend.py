@@ -17,7 +17,6 @@ Requires (optional, install what you have hardware for):
 
 from __future__ import annotations
 
-import colorsys
 import os
 import shutil
 import subprocess
@@ -51,45 +50,29 @@ def _clamp_rgb(rgb: Tuple[int, int, int]) -> Tuple[int, int, int]:
 # ---------------------------------------------------------------------------
 #
 # Every command is a 9-byte feature report [0, cmd, b2..b7, checksum] with
-# checksum = 255 - sum(bytes[1..7]). From Gigabyte Control Center
-# (IteKeyBoard / FusionLightService / RgbPageViewModel_ZoneRgb_*), then
-# checked by eye on the laptop with tools/light_probe.py (2026-10-02):
+# checksum = 255 - sum(bytes[1..7]). The sequence below is exactly what
+# Gigabyte Control Center 26.09 sends, recorded by hooking its HID calls with
+# Frida (research/usb-capture/hidhook.py, 2026-10-02):
 #
-#   cmd 0x08 is overloaded - byte 2 decides what it means:
-#     [08, 00, type, speed, bright, color, dir]  SetLightEffect: switch effect
-#     [08, z,  r, g, b, bright, 0]  z = 3/4/5    SetZoneColors: left/centre/right
-#   Zone colours only show in the Custom effect (type 9).
-#   The keyboard ignores both brightness bytes; only scaling RGB dims it.
+#   keyboard  [08, 0A, r, g, b, 32, 00]   zone 0x0A = whole keyboard
+#   light bar [08, 01, 09, r, g, b, 00]
 #
-#   The old code looped zones 0..9 + 0xFF: zone 0 re-set the effect with r/g/b
-#   landing in type/speed/brightness, and the other indices hit the sync byte -
-#   which is why brightness never changed and the light bar went dark.
+#   Brightness is not a byte: GCC scales RGB (its slider minimum turns CC00FF
+#   into 280033), and both devices ignore the brightness fields anyway. GCC
+#   sends no effect command when it applies a colour, and neither do we.
 #
-#   Light bar (7A43): an arbitrary-RGB command is not known yet - the
-#   [08, 01, 09, r, g, b] "SetZoneColorsLightBar" GCC uses leaves it red. What
-#   works is its own Static effect [08, 00, 01, speed, bright 0..50, color, 0]
-#   with one of the firmware's colour presets; the brightness byte does work
-#   there. So the bar gets the nearest preset.
+#   cmd 0x08 is overloaded by byte 2: 0 = SetLightEffect [type, speed,
+#   bright, color, dir]. The old code looped "zones" 0..9 + 0xFF and so fired
+#   garbage effect/sync commands - why brightness never changed and the light
+#   bar went dark.
+#
+#   This laptop's light bar has dead blue LEDs: even GCC cannot light it
+#   blue, so blues look dark and white comes out without its blue part.
 GIGA_CMD_EFFECT = 0x08
 GIGA_CMD_IDLE = 0x0A
-GIGA_EFFECT_STATIC = 1
-GIGA_EFFECT_CUSTOM = 9
-GIGA_ZONES = (3, 4, 5)
-GIGA_MAX_BRIGHTNESS = 50
+GIGA_ZONE_ALL = 0x0A
+GIGA_LEVEL = 0x32                  # what GCC always sends; the firmware ignores it
 GIGA_DELAY_S = 0.065               # GCC sleeps this long after every report
-
-# FusionLightColor indices with the hue each preset stands for.
-GIGA_PRESET_HUES = ((1, 0), (5, 30), (3, 60), (2, 120), (4, 230), (6, 285))
-GIGA_PRESET_WHITE = 7
-
-
-def _lightbar_preset(r: int, g: int, b: int) -> int:
-    """Nearest firmware colour preset for an RGB colour."""
-    h, s, _ = colorsys.rgb_to_hsv(r / 255, g / 255, b / 255)
-    if s < 0.3:
-        return GIGA_PRESET_WHITE
-    deg = h * 360
-    return min(GIGA_PRESET_HUES, key=lambda p: min(abs(deg - p[1]), 360 - abs(deg - p[1])))[0]
 
 
 def _giga_packet(*body: int) -> bytes:
@@ -127,47 +110,31 @@ def _open_giga_control(hid, pid: int):
 
 
 def _set_color_hidraw(rgb: Tuple[int, int, int], brightness: int = 100) -> bool:
-    """Set the AORUS keyboard (3 zones, Custom effect) and its light bar."""
+    """Set the AORUS keyboard and its light bar the way GCC does."""
     try:
         import hid
     except ImportError:
         return False
 
     brightness = max(0, min(100, int(brightness)))
-    r, g, b = _clamp_rgb(rgb)
-    sr, sg, sb = (round(c * brightness / 100) for c in (r, g, b))
-    level = round(brightness * GIGA_MAX_BRIGHTNESS / 100)
+    r, g, b = (round(c * brightness / 100) for c in _clamp_rgb(rgb))
     ok = False
 
-    kbd = _open_giga_control(hid, GIGABYTE_PRODUCT_ID)
-    if kbd is not None:
+    for pid, packet in (
+        (GIGABYTE_PRODUCT_ID, _giga_packet(GIGA_CMD_EFFECT, GIGA_ZONE_ALL, r, g, b, GIGA_LEVEL, 0)),
+        (GIGABYTE_LIGHTBAR_PID, _giga_packet(GIGA_CMD_EFFECT, 0x01, 0x09, r, g, b, 0)),
+    ):
+        dev = _open_giga_control(hid, pid)
+        if dev is None:
+            continue
         try:
-            # Keyboard-only effect change (sync byte 0), so the bar keeps its own state.
-            kbd.send_feature_report(_giga_packet(GIGA_CMD_EFFECT, 0x00, GIGA_EFFECT_CUSTOM,
-                                                 1, GIGA_MAX_BRIGHTNESS, 0, 0))
-            time.sleep(GIGA_DELAY_S)
-            for zone in GIGA_ZONES:
-                kbd.send_feature_report(_giga_packet(GIGA_CMD_EFFECT, zone, sr, sg, sb,
-                                                     GIGA_MAX_BRIGHTNESS, 0))
-                time.sleep(GIGA_DELAY_S)
-            ok = True
-        except Exception:
-            pass
-        finally:
-            kbd.close()
-
-    bar = _open_giga_control(hid, GIGABYTE_LIGHTBAR_PID)
-    if bar is not None:
-        try:
-            bar.send_feature_report(_giga_packet(GIGA_CMD_EFFECT, 0x00, GIGA_EFFECT_STATIC, 1,
-                                                 level, _lightbar_preset(r, g, b), 0))
+            dev.send_feature_report(packet)
             time.sleep(GIGA_DELAY_S)
             ok = True
         except Exception:
             pass
         finally:
-            bar.close()
-
+            dev.close()
     return ok
 
 
