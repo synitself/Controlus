@@ -1,0 +1,11 @@
+[Unit]
+Description=Controlus - restore RGB colour at login and keep the mouse in sync
+After=graphical-session.target
+
+[Service]
+ExecStart=/usr/local/bin/controlus-watcher
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

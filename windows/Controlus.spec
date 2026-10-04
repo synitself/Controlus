@@ -11,10 +11,10 @@ block_cipher = None
 
 a = Analysis(
     ['main.py'],
-    pathex=['.'],
+    pathex=['.', '../common'],
     binaries=[],
     datas=[],
-    hiddenimports=['hid', 'openrgb', 'openrgb.utils', 'PySide6.QtNetwork'],
+    hiddenimports=['controlus_backend', 'hid', 'openrgb', 'openrgb.utils', 'PySide6.QtNetwork'],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],

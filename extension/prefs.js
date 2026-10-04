@@ -245,7 +245,7 @@ export default class ControlusPreferences extends ExtensionPreferences {
         
         try {
             GLib.spawn_command_line_async(
-                `pkexec ${helperPath} set-color ${r} ${g} ${b} ${brightness}`
+                `${helperPath} set-color ${r} ${g} ${b} ${brightness}`
             );
         } catch (e) {
             log(`[Controlus] Failed to apply color: ${e.message}`);
@@ -316,7 +316,7 @@ export default class ControlusPreferences extends ExtensionPreferences {
             
             try {
                 GLib.spawn_command_line_async(
-                    `pkexec ${helperPath} set-color ${fav.r} ${fav.g} ${fav.b} ${brightness}`
+                    `${helperPath} set-color ${fav.r} ${fav.g} ${fav.b} ${brightness}`
                 );
             } catch (e) {
                 log(`[Controlus] Failed to apply favorite: ${e.message}`);

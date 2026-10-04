@@ -12,7 +12,7 @@ gi.require_version('Gtk', '4.0')
 gi.require_version('Adw', '1')
 
 from gi.repository import Gtk, Adw, Gdk, Gio, GLib
-import subprocess, json, math, os, struct, fcntl, glob
+import json, math, threading
 from pathlib import Path
 try:
     from controlus.backend import set_color as backend_set_color
@@ -21,75 +21,6 @@ except Exception:
 
 CONFIG_DIR = Path.home() / ".config" / "controlus"
 CONFIG_FILE = CONFIG_DIR / "config.json"
-
-# HID constants for Gigabyte keyboard
-HIDIOCSFEATURE = 0xC0094806
-VENDOR_ID = 0x0414
-PRODUCT_ID = 0x7A44
-
-
-def find_hidraw_device():
-    """Find the correct hidraw device for the keyboard"""
-    for hidraw in glob.glob('/dev/hidraw*'):
-        try:
-            device_path = f'/sys/class/hidraw/{os.path.basename(hidraw)}/device'
-            
-            # Check modalias for VID:PID
-            modalias_path = f'{device_path}/modalias'
-            if os.path.exists(modalias_path):
-                with open(modalias_path, 'r') as f:
-                    modalias = f.read().lower()
-                    vid = f'{VENDOR_ID:04X}'.lower()
-                    pid = f'{PRODUCT_ID:04X}'.lower()
-                    if vid in modalias and pid in modalias:
-                        return hidraw
-            
-            # Alternative: check uevent
-            uevent_path = f'{device_path}/uevent'
-            if os.path.exists(uevent_path):
-                with open(uevent_path, 'r') as f:
-                    content = f.read().upper()
-                    if f'{VENDOR_ID:04X}' in content and f'{PRODUCT_ID:04X}' in content:
-                        return hidraw
-        except (IOError, PermissionError):
-            continue
-    return None
-
-
-def set_keyboard_color(r, g, b, brightness=100):
-    """Set keyboard color directly via HID"""
-    device = find_hidraw_device()
-    if not device:
-        return False, "Keyboard device not found"
-    
-    try:
-        # Apply brightness
-        factor = brightness / 100
-        r = int(r * factor)
-        g = int(g * factor)
-        b = int(b * factor)
-        
-        with open(device, 'r+b', buffering=0) as fd:
-            # Set all zones (0-9 and 0xFF for all)
-            for zone in list(range(10)) + [0xFF]:
-                # Build packet: [ReportID, Cmd, Zone, R, G, B, Brightness, 0, Checksum]
-                cmd = 0x08  # SetZoneColors
-                packet = [0x00, cmd, zone, r, g, b, 100, 0x00]
-                checksum = (255 - sum(packet[1:7])) & 0xFF
-                packet.append(checksum)
-                
-                data = bytes(packet)
-                buf = bytearray(9)
-                buf[0:len(data)] = data
-                
-                fcntl.ioctl(fd.fileno(), HIDIOCSFEATURE, bytes(buf))
-        
-        return True, f"RGB({r}, {g}, {b})"
-    except PermissionError:
-        return False, "Permission denied - udev rule not installed"
-    except Exception as e:
-        return False, str(e)
-
 
 class ColorWheelWidget(Gtk.DrawingArea):
     """Custom color wheel widget"""
@@ -421,27 +352,37 @@ class ControlusWindow(Adw.ApplicationWindow):
     
     def on_off_clicked(self, button):
         self.apply_color(0, 0, 0, 0)
-        self.show_toast("Keyboard backlight off")
     
     def apply_color(self, r, g, b, brightness=100):
-        success, msg = (False, "backend not available")
-        if backend_set_color:
+        if backend_set_color is None:
+            self.show_toast("Error: controlus backend not installed (see install.sh)")
+            return
+
+        # HID writes take a few hundred ms; keep them off the GTK main loop.
+        def work():
             try:
                 success, msg = backend_set_color(r, g, b, brightness)
             except Exception as e:
                 success, msg = False, str(e)
-        else:
-            # Fallback to direct HID if backend import failed
-            success, msg = set_keyboard_color(r, g, b, brightness)
-        
+            GLib.idle_add(self._on_applied, r, g, b, brightness, success, msg)
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _on_applied(self, r, g, b, brightness, success, msg):
         if success:
-            # Save last color
-            self.config['last_color'] = {'r': r, 'g': g, 'b': b}
-            self.config['brightness'] = brightness
+            if brightness == 0 or (r, g, b) == (0, 0, 0):
+                # "Off" keeps the chosen colour; the watcher service restores black.
+                self.config['power'] = False
+                self.show_toast("Lighting off")
+            else:
+                self.config['power'] = True
+                self.config['last_color'] = {'r': r, 'g': g, 'b': b}
+                self.config['brightness'] = brightness
+                self.show_toast(f"Applied {msg}")
             self.save_config()
-            self.show_toast(f"Applied {msg}")
         else:
             self.show_toast(f"Error: {msg}")
+        return False
     
     def show_toast(self, message):
         toast = Adw.Toast.new(message)
